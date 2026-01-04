@@ -20,6 +20,7 @@ from telegram.ext import (
 
 import config
 from card_generator import validate_bin, generate_cards
+import asyncio
 
 # Conversation states
 WAITING_FOR_QUANTITY = 1
@@ -198,6 +199,21 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
     print(f"Update {update} caused error {context.error}")
 
 
+async def health_check():
+    """Simple health check for Render.com"""
+    from flask import Flask
+    app = Flask(__name__)
+
+    @app.route('/')
+    def health():
+        return "Bot is running!"
+
+    @app.route('/health')
+    def health_endpoint():
+        return {"status": "healthy", "timestamp": str(datetime.now())}
+
+    return app
+
 def main() -> None:
     """Start the bot."""
     # Check if bot token is configured
@@ -205,10 +221,10 @@ def main() -> None:
         print("ERROR: TELEGRAM_BOT_TOKEN not found!")
         print("Please set it as an environment variable or in a .env file.")
         return
-    
+
     # Create application
     application = Application.builder().token(config.TELEGRAM_BOT_TOKEN).build()
-    
+
     # Conversation handler for BIN → Quantity flow
     conv_handler = ConversationHandler(
         entry_points=[
@@ -228,15 +244,46 @@ def main() -> None:
         fallbacks=[CommandHandler('cancel', cancel_command)],
         conversation_timeout=config.CONVERSATION_TIMEOUT,
     )
-    
+
     # Add handlers
     application.add_handler(CommandHandler('start', start_command))
     application.add_handler(conv_handler)
     application.add_error_handler(error_handler)
-    
+
     # Start bot
     print("Bot is starting...")
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
+
+    # For Render.com, we need to run both the bot and a web server
+    async def run_both():
+        # Start the health check server
+        from flask import Flask
+        app = Flask(__name__)
+
+        @app.route('/')
+        def health():
+            return "Bot is running!"
+
+        @app.route('/health')
+        def health_endpoint():
+            return {"status": "healthy", "timestamp": str(datetime.now())}
+
+        # Run both bot polling and web server
+        import threading
+        from werkzeug.serving import make_server
+
+        def run_web():
+            server = make_server('0.0.0.0', int(os.getenv('PORT', 5000)), app)
+            server.serve_forever()
+
+        # Start web server in background
+        web_thread = threading.Thread(target=run_web, daemon=True)
+        web_thread.start()
+
+        # Run bot polling
+        await application.run_polling(allowed_updates=Update.ALL_TYPES)
+
+    # Run everything
+    asyncio.run(run_both())
 
 
 if __name__ == '__main__':
